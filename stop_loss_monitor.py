@@ -120,7 +120,7 @@ async def run_websocket_monitor(executor):
                                 # print("size", size)
                                 limit = TOKENS[token_id]["stop_loss"]
                                 actual_price = TOKENS[token_id]["actual_price"]
-                                new_stop_loss = round(current_price - 0.05, 2)
+                                new_stop_loss = round(current_price - 0.15, 2)
                                 if current_price <= limit:
                                     print(f"\n🚨 VENDIENDO {token_id} a ${current_price}")
                                         

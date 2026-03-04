@@ -13,3 +13,6 @@ __pycache__/
 
 # Databases
 *.db
+
+# Amazon Web Services PEM Key
+*.pem
