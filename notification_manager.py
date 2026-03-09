@@ -64,6 +64,52 @@ class NotificationManager:
         """Avisa si encontró un mercado nuevo (Sniper Mode)."""
         self._send(f"🎯 **NEW EVENT DETECTED**\n\n{event_title}\n📅 {created_at}")
 
+    def list_token_ids(self):
+
+        try:
+            # Offload the database read operation to a background thread 
+            # to prevent freezing the asynchronous Telegram listener
+            active_tokens = active_tokens = config.get("TOKEN_IDs", {})
+            
+            # Handle the edge case where the database is empty
+            if not active_tokens:
+                self._send("📭 The portfolio is currently empty. No active tokens are being monitored.")
+                return
+
+            # Initialize the response array
+            response_lines = [f"📊 Active Positions ({len(active_tokens)}):\n"]
+            
+            # Iterate through the dictionary to format the data
+            for token_id, token_data in active_tokens.items():
+                # Truncate the long token hash for readability on mobile screens
+                short_id = f"{token_id[:4]}...{token_id[-5:]}"
+                
+                
+                # Safely extract the financial metrics
+                stop_loss = token_data.get("stop_loss", 0.0)
+                size = token_data.get("size", 0.0)
+                current_price = token_data.get("actual_price", 0.0)
+                bracket = token_data.get("bracket", "Unknown Market")
+                status = "🟢 ACTIVE" if token_data.get("is_active", False) else "🔴 INACTIVE"
+                
+                token_info = (
+                    f"🔹 ID: {short_id}\n"
+                    f" 💵 Tracked Price: ${current_price}\n"
+                    f" 🛑 Stop Loss Limit: ${stop_loss}\n"
+                    f" ⚖️ Position Size: {size}\n"
+                    f" 🎯 Bracket: {bracket}\n"
+                    f" 🎯 Status: {status}\n"
+                )
+                response_lines.append(token_info)
+
+            # Join all lines and send the consolidated report back to the user
+            final_message = "\n".join(response_lines)
+            self._send(final_message)
+        
+        except Exception as e:
+            error_msg = f"❌ Database Read Error: {e}"
+            message.reply(error_msg)
+            print(error_msg)
 
 
     def check_for_commands(self, command_queue):

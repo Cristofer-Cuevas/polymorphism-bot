@@ -212,8 +212,8 @@ class OrderExecutor:
             
             if resp and resp.get("success"):
                 print(f"✅ Orden colocada en el libro. ID: {resp.get('orderID')}")
-                config.update_nested("LIMIT_ORDER_IDs", size, resp.get('orderID'))
-                config.add_monitored_token(token_id, stop_loss_price, size, price)
+                # config.update_nested("LIMIT_ORDER_IDs", size, resp.get('orderID'))
+                # config.add_monitored_token(token_id, stop_loss_price, size, price)
                 print("⏳ Ahora a esperar que alguien te venda...")
                 return resp.get('orderID')
             else:

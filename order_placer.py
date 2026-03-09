@@ -8,17 +8,18 @@ from filter_by_90_114 import GetMarkets
 from notification_manager import Notifier
 import threading
 import queue
+from shared_queue import command_queue
 sys.stdout.reconfigure(line_buffering=True)
 
 # Load environment variables from .env file
 # load_dotenv()
 
-command_queue = queue.Queue()
+# command_queue = queue.Queue()
 
 current_config = {
     "side": "BUY",
     "size": 250,      # Cantidad de acciones
-    "price": 0.10,  # Precio límite
+    "price": 0.21,  # Precio límite
     "market": "65-89",
     "seriesSlug": "elon-tweets-48h"
 }
@@ -134,8 +135,10 @@ def cycle():
         print("\n🔴 Bot detenido por el usuario.")
         sys.exit(0)
 
-# t = threading.Thread(target=Notifier.check_for_commands, args=(command_queue,), daemon=True)
-# t.start()
+t = threading.Thread(target=Notifier.check_for_commands, args=(command_queue,), daemon=True)
+t.start()
+
+# print("executer")
 
 # cycle()
 

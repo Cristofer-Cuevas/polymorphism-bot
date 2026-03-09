@@ -4,15 +4,24 @@ import json
 import websockets
 from order_placer import OrderExecutor # Import your existing class
 from config_manager import config
+from notification_manager import Notifier
+from shared_queue import get_parsed_command
+from get_positions import fetch_polymarket_positions
+import os
+from x_stream_monitor import XStreamManager
+
 
 # --- CONFIGURATION ---
 TARGET_TOKEN_ID = "YOUR_LONG_TOKEN_ID_HERE"
 STOP_LOSS_PRICE = 0.30
 SELL_AMOUNT = 50.0
+stop_loss_cache = config.get_stop_loss_threshold()
 
 # 1. THE WEBSOCKET TASK (Async)
 # We pass the 'existing_client' as an argument so we don't create a new one.
 async def run_websocket_monitor(executor):
+
+    global stop_loss_cache
 
     uri = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
@@ -27,7 +36,7 @@ async def run_websocket_monitor(executor):
 
     while True:
         try:
-            async with websockets.connect(uri) as websocket:
+            async with websockets.connect(uri, ping_interval=15, ping_timeout=10, close_timeout=5) as websocket:
                 print(f"👀 Vigilando {len(TOKEN_IDs)} mercados a la vez...")
 
                 # 1. Suscripción MASIVA (Una sola petición)
@@ -40,6 +49,47 @@ async def run_websocket_monitor(executor):
                 subscribed_tokens = set()
 
                 while True:
+                    # print("Text:", get_parsed_command())
+                    message = get_parsed_command()
+                    new_command = message[0].lower() if message else None
+                    
+
+                    if new_command == '/global_threshold' and len(message) > 1:
+                        print(f"📥 Command intercepted: {new_command}")
+                        try:
+                            # Parse the command (assuming the command is just the float number for now)
+                            new_threshold = float(message[1])
+                            
+                            # Update the database for permanent persistence across reboots
+                            config.update_stop_loss_threshold(new_threshold)
+                            
+                            # CRITICAL: Update the RAM cache so the bot uses the new value instantly
+                            # without needing to read the database again.
+                            stop_loss_cache = new_threshold
+                            Notifier._send(f"✅ Global stop loss threshold updated to ${new_threshold}")
+                            print(f"✅ RAM CACHE UPDATED TO: {stop_loss_cache}")
+                        except ValueError:
+                            print("❌ Invalid command format. Expected a float number.")
+                    elif new_command == "/token_stop_loss":
+                        await asyncio.to_thread(config.modify_token_stop_loss, message[1], message[2])
+                        Notifier._send(f"✅ Stop loss for token {message[1]} updated to {message[2]}")
+                    elif new_command == "/list_token_ids":
+                        Notifier.list_token_ids()
+                    elif new_command == "/update_token_ids":
+                        await asyncio.to_thread(fetch_polymarket_positions)
+                    elif new_command == "/r_i_t": # Remove Inactive Tokens
+                        config.remove_inactive_tokens()
+                        Notifier._send("✅ Inactive tokens removed from monitoring.")
+                    elif new_command == "/r_b_t_i": # Remove By Token ID
+                        config.remove_by_token_id(message[1])
+                        print("Message",message)
+                        Notifier._send("✅ Token removed from monitoring.")
+                    elif new_command == "/t_t_m": # Toggle Token Monitoring
+                        token_status = config.toggle_token_monitoring(message[1], "is_active")
+                        Notifier._send(token_status)
+                    elif new_command == "/t_o_l":
+                        token_status = config.toggle_token_monitoring(message[1], "is_one_left")
+                        Notifier._send(token_status)
 
                     TOKENS = config.get("TOKEN_IDs", {})
                     TOKEN_IDs = list(TOKENS.keys())
@@ -111,7 +161,7 @@ async def run_websocket_monitor(executor):
                                 continue
 
                             # --- TU LÓGICA DE STOP LOSS ---
-                            print(f"📉 {token_id[:10]}... -> ${current_price}", end="\r")
+                            print(f"📉 {token_id[:10]}... -> ${current_price}")
 
                             # Buscamos en config si este token está vigilado
                             # (Asumiendo que tienes cargada tu config)
@@ -120,20 +170,36 @@ async def run_websocket_monitor(executor):
                                 # print("size", size)
                                 limit = TOKENS[token_id]["stop_loss"]
                                 actual_price = TOKENS[token_id]["actual_price"]
-                                new_stop_loss = round(current_price - 0.15, 2)
-                                if current_price <= limit:
-                                    print(f"\n🚨 VENDIENDO {token_id} a ${current_price}")
-                                        
-                                        # Run the blocking HTTP request in a background thread
-                                    await asyncio.to_thread(executor.sell_rapidly, token_id, size)
-                                        
-                                        # Run the blocking database write in a background thread
-                                    await asyncio.to_thread(config.remove_monitored_token, token_id)
-                                elif current_price > actual_price:
-                                    await asyncio.to_thread(config.modify_token_stop_loss, token_id, new_stop_loss, current_price)
+                                new_stop_loss = round(current_price - stop_loss_cache, 2)
+                                bracket = TOKENS[token_id].get("bracket")[20:]
+
+                                if current_price > actual_price:
+                                    await asyncio.to_thread(config.modify_token_stop_loss, token_id[-5:], new_stop_loss, current_price)
                                     print("PRICE ISTILL HIGH AF")
                                     TOKENS[token_id]["actual_price"] = current_price
                                     TOKENS[token_id]["stop_loss"] = new_stop_loss
+                                    # elif TOKENS[token_id]["is_one_left"] == True:
+                                    #     print(f"\n🚨 VENDIENDO {token_id} a ${current_price}")
+                                        
+                                    #     Notifier._send(f"\nSOLD {bracket} at ${current_price} due to a new tweet.")
+                                            
+                                    #         # Run the blocking HTTP request in a background thread
+                                    #     # await asyncio.to_thread(executor.sell_rapidly, token_id, size)
+                                            
+                                    #         # Run the blocking database write in a background thread
+                                    # await asyncio.to_thread(config.toggle_token_monitoring, token_id[-5:], "is_active")
+                                elif current_price <= limit and TOKENS[token_id]["is_active"] == True:
+                                    print(f"\n🚨 VENDIENDO {token_id} a ${current_price}")
+                                    
+                                    Notifier._send(f"\nSOLD {bracket} at ${current_price} due to stop loss trigger.")
+                                        
+                                    # Run the blocking HTTP request in a background thread
+                                    await asyncio.to_thread(executor.sell_rapidly, token_id, size)
+                                        
+                                    # Run the blocking database write in a background thread
+                                    await asyncio.to_thread(config.toggle_token_monitoring, token_id[-5:], "is_active")
+                                
+
 
                     # --- RECONNECTION HANDLING ---
                     except websockets.exceptions.ConnectionClosed as e:
@@ -153,6 +219,35 @@ async def run_websocket_monitor(executor):
             print(f"Error WS: {e}")
             await asyncio.sleep(5)
 
+async def emergency_tweet_sell(executor):
+    """
+    This function acts as the bridge. It gets called ONLY when XStreamManager 
+    detects a tweet. It reads the database and sells all active tokens instantly.
+    """
+    print("⚡ X API TRIGGER: INITIATING EMERGENCY SELL PROTOCOL ⚡")
+    
+    TOKENS = config.get("TOKEN_IDs", {})
+    if not TOKENS:
+        print("📭 No tokens to sell.")
+        return
+
+    for token_id, token_data in TOKENS.items():
+        if token_data.get("is_one_left"):
+            size = token_data.get("size", 0.0)
+            bracket = token_data.get("bracket", "Unknown")[20:]
+            
+            if size > 0:
+                print(f"🚨 LIQUIDATING {token_id} DUE TO ELON TWEET!")
+                
+                # Execute the sell order in a background thread to prevent blocking
+                await asyncio.to_thread(executor.sell_rapidly, token_id, size)
+                Notifier._send(f"\nSOLD {bracket} instantly due to a new tweet detected.")
+                
+                # Remove from database immediately to prevent double spending
+                await asyncio.to_thread(config.toggle_token_monitoring, token_id[-5:], "is_active")
+                
+    print("✅ Emergency sell protocol complete.")
+
 # 2. YOUR OLD BOT LOGIC (Wrapped)
 # This wrapper allows your blocking 'while True' loop to run without stopping the WebSocket
 async def run_existing_bot_loop(executor):
@@ -165,21 +260,28 @@ async def run_existing_bot_loop(executor):
 
 # 3. MAIN EXECUTION
 async def main():
-    # A. Initialize your SINGLE connection
     executor = OrderExecutor
     
-    # Check if connected
-    if not executor.client:
-        print("❌ Failed to connect OrderExecutor.")
+    if not hasattr(executor, 'client') or not executor.client:
+        print("❌ Warning: OrderExecutor client may not be fully initialized.")
+
+    print("✅ System Core Online.")
+
+    x_token = os.getenv("X_BEARER_TOKEN")
+    if not x_token:
+        print("❌ CRITICAL: X_BEARER_TOKEN not found in environment variables.")
         return
 
-    print("✅ Shared Connection Established.")
+    # Use a lambda to pass the executor argument to the emergency function
+    trigger_action = lambda: emergency_tweet_sell(executor)
+    
+    # Initialize the X stream with the specific sell function, NOT the websocket loop
+    x_monitor = XStreamManager(bearer_token=x_token, trigger_function=trigger_action)
 
-    # B. Run both tasks in parallel
-    # gather() runs them at the same time. If one waits, the other runs.
+    # Launch both infinite loops concurrently
     await asyncio.gather(
         run_websocket_monitor(executor),
-        # run_existing_bot_loop(executor)
+        x_monitor.start_listening()
     )
 
 if __name__ == "__main__":

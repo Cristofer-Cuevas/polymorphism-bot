@@ -1,101 +1,3 @@
-# import json
-# import os
-# from datetime import datetime
-
-# class ConfigManager:
-#     def __init__(self, file_path="configuration.json"):
-#         self.file_path = file_path
-#         self.config = {}
-#         # FIX: Added parentheses () to actually execute the method
-#         self._load_config()
-
-#     def _load_config(self):
-#         """Loads JSON into memory. Starts empty if file is missing or corrupt."""
-#         if os.path.exists(self.file_path):
-#             try:
-#                 with open(self.file_path, 'r', encoding='utf-8') as f:
-#                     self.config = json.load(f)
-#             except json.JSONDecodeError:
-#                 print(f"⚠️ Error: The file {self.file_path} is corrupt or malformed.")
-#                 self.config = {}
-#         else:
-#             print(f"⚠️ Alert: {self.file_path} not found. It will be created upon saving.")
-
-#     def _save_changes(self):
-#         """Writes changes to JSON file keeping the pretty format."""
-#         try:
-#             with open(self.file_path, 'w', encoding='utf-8') as f:
-#                 # indent=4 ensures readability for manual editing
-#                 # ensure_ascii=False supports special characters correctly
-#                 json.dump(self.config, f, indent=4, ensure_ascii=False)
-#         except Exception as e:
-#             print(f"❌ Error saving configuration: {e}")
-
-#     # --- READ METHODS ---
-
-#     def get(self, key, default=None):
-#         """Gets a top-level value (e.g., LAST_EVENT_ID)."""
-#         return self.config.get(key, default)
-
-#     def get_nested(self, parent_key, child_key, default=None):
-#         """Gets a value inside a dictionary (e.g., GET_EVENTS -> TAG_ID_ELON)."""
-#         parent = self.config.get(parent_key, {})
-        
-#         # Check if the parent is actually a dictionary to avoid errors
-#         if isinstance(parent, dict):
-#             return parent.get(child_key, default)
-#         return default 
-
-#     # --- WRITE METHODS ---
-
-#     def update(self, key, value):
-#         """Updates or creates a top-level value and saves."""
-#         self.config[key] = value
-#         self._save_changes()
-
-#     def update_nested(self, parent_key, child_key, value):
-#         """Updates a value inside a nested dictionary."""
-#         # If parent doesn't exist, create it as a dict
-#         if parent_key not in self.config:
-#             self.config[parent_key] = {}
-        
-#         # Ensure parent is a dict before writing
-#         if isinstance(self.config[parent_key], dict):
-#             self.config[parent_key][child_key] = value
-#             self._save_changes()
-#         else:
-#             print(f"❌ Error: '{parent_key}' exists but is not a dictionary.")
-
-#     def get_last_processed_date(self):
-#         """Loads the date string from JSON and converts it to a datetime object."""
-#         try:
-#             with open(self.file_path, 'r') as f:
-#                 data = json.load(f)
-#                 date_str = data.get('LAST_EVENT_CREATED_DATE', {})
-                
-#                 # ⚠️ CRITICAL: Python needs '+00:00' instead of 'Z' for some versions
-#                 clean_date_str = date_str.replace("Z", "+00:00")
-                
-#                 return datetime.fromisoformat(clean_date_str)
-#         except FileNotFoundError:
-#             # Default to an old date if file doesn't exist
-#             return datetime.fromisoformat("2020-01-01T00:00:00+00:00")
-
-#     def update_last_processed_date(self, new_date_obj):
-#         """Saves the new latest date back to JSON."""
-#         with open(self.file_path, 'r+') as f:
-#             data = json.load(f)
-#             # Convert object back to string for JSON
-#             data['LAST_EVENT_CREATED_DATE'] = new_date_obj.isoformat().replace("+00:00", "Z")
-            
-#             f.seek(0)
-#             json.dump(data, f, indent=4)
-#             f.truncate()
-
-# # Global instance for easy import
-# config = ConfigManager()
-
-
 
 import sqlite3
 import json
@@ -227,7 +129,7 @@ class ConfigManager:
         self.update('LAST_EVENT_CREATED_DATE', date_str)
         print(f"💾 Checkpoint saved: {date_str}")
 
-    def add_monitored_token(self, token_id, stop_loss, size, price):
+    def add_monitored_token(self, token_id, stop_loss, size, price, slug, is_one_left):
         """
         Agrega un token a la lista de vigilancia usando tu lógica existente.
         """
@@ -235,7 +137,10 @@ class ConfigManager:
         data = {
             "stop_loss": float(stop_loss),
             "size": float(size),
-            "actual_price": float(price)
+            "actual_price": float(price),
+            "is_active": True,
+            "bracket": slug,
+            "is_one_left": is_one_left
         }
         
         # 2. Usamos tu función mágica 'update_nested'
@@ -268,30 +173,223 @@ class ConfigManager:
             print(f"⚠️ Token {token_id[:15]}... was not found in monitoring list.")
             return False
 
-    def modify_token_stop_loss(self, token_id, new_stop_loss, price):
+    def modify_token_stop_loss(self, short_token_id, new_stop_loss, price=None):
         """
-        Updates the stop_loss value of an already monitored token.
-        Preserves the existing 'size' data.
+        Updates the stop_loss value of an already monitored token by matching 
+        the last 5 characters of its ID. Preserves 'actual_price' and 'size'.
         """
         parent_key = "TOKEN_IDs"
         
         # 1. Load current tokens dictionary
         all_tokens = self.get(parent_key, {})
 
-        # 2. Verify the token actually exists in the monitoring list
-        if token_id in all_tokens:
-            # 3. Update ONLY the stop_loss
-            all_tokens[token_id]["stop_loss"] = float(new_stop_loss)
-            all_tokens[token_id]["actual_price"] = float(price)
+        # 2. Search for the full token ID using the last 5 charactersh
+        matched_full_id = None
+        
+        # Ensure we are comparing strings and extract exactly the last 5 chars.
+        # This protects the logic even if the full ID is accidentally passed.
+        search_suffix = str(short_token_id)[-5:] 
+        
+        for full_id in all_tokens.keys():
+            if str(full_id).endswith(search_suffix):
+                matched_full_id = full_id
+                break  # Stop searching instantly once the match is found
+
+        # 3. Verify if a match was successfully found in the loop
+        if matched_full_id:
             
-            # 4. Save the whole dictionary back to the DB
+            try:
+                # Update using the FULL ID, not the 5-digit suffix
+                all_tokens[matched_full_id]["stop_loss"] = float(new_stop_loss)
+            except (ValueError, TypeError):
+                print(f"❌ Error: Invalid stop_loss format provided for ...{search_suffix}")
+                return False
+
+            if price is not None:
+                try:
+                    all_tokens[matched_full_id]["actual_price"] = float(price)
+                except (ValueError, TypeError):
+                    print(f"⚠️ Warning: Invalid price format ignored for ...{search_suffix}")
+            
+            # 4. Save the mutated dictionary back to the DB
             self.update(parent_key, all_tokens)
             
-            print(f"✏️ Config updated: Token {token_id[:10]}... new Stop Loss is ${new_stop_loss}")
+            print(f"✏️ Config updated: Token ...{search_suffix} new Stop Loss is ${new_stop_loss}")
             return True
+            
         else:
-            print(f"⚠️ Cannot modify: Token {token_id[:10]}... is not currently being monitored.")
+            print(f"⚠️ Cannot modify: No token ending in '...{search_suffix}' is currently being monitored.")
             return False
+
+    def get_stop_loss_threshold(self, default=0.15):
+        """
+        Retrieves the master stop loss threshold from the DB.
+        If it doesn't exist yet, it returns the provided default.
+        """
+        # Uses the existing generic 'get' method
+        value = self.get("STOP_LOSS_THRESHOLD", default)
+        return float(value)
+
+    def update_stop_loss_threshold(self, new_threshold):
+        """
+        Updates the master stop loss threshold in the database.
+        """
+        # Uses the existing generic 'update' method
+        self.update("STOP_LOSS_THRESHOLD", float(new_threshold))
+        print(f"⚙️ DB Update: Global Stop Loss Threshold permanently set to {new_threshold}")
+
+    def is_token_monitored(self, token_id: str) -> bool:
+        """
+        Checks if a specific token_id is currently stored in the database's monitoring list.
+        
+        Args:
+            token_id (str): The unique Polymarket identifier to verify.
+            
+        Returns:
+            bool: True if the token exists in the database, False otherwise.
+        """
+        # Retrieve the master dictionary of all active tokens from SQLite
+        active_tokens = self.get("TOKEN_IDs", {})
+        
+        # Evaluate and return whether the provided token_id exists as a key
+        return token_id in active_tokens
+
+    def remove_inactive_tokens(self) -> int:
+        """
+        Scans the master token list and permanently removes any token 
+        where the 'is_active' flag evaluates to False.
+        
+        Returns:
+            int: The total number of tokens removed from the database.
+        """
+        parent_key = "TOKEN_IDs"
+        
+        # 1. Load the entire token dictionary from SQLite
+        all_tokens = self.get(parent_key, {})
+        
+        if not all_tokens:
+            print("📭 Token database is empty. No cleanup required.")
+            return 0
+
+        # 2. Safely filter out inactive tokens using dictionary comprehension.
+        # We use .get("is_active", True) to default to True just in case 
+        # a token is missing the key, preventing accidental deletions.
+        active_tokens_only = {
+            token_id: token_data 
+            for token_id, token_data in all_tokens.items() 
+            if token_data.get("is_active", True) is True
+        }
+
+        # 3. Calculate how many tokens were actually filtered out
+        tokens_removed_count = len(all_tokens) - len(active_tokens_only)
+
+        # 4. Save to the database ONLY if a change occurred to save I/O operations
+        if tokens_removed_count > 0:
+            self.update(parent_key, active_tokens_only)
+            print(f"🧹 Cleanup complete: {tokens_removed_count} inactive token(s) permanently removed from DB.")
+        else:
+            print("✅ Database is clean: No inactive tokens found.")
+            
+        return tokens_removed_count
+    
+    def remove_by_token_id(self, suffix: str) -> bool:
+        """
+        Searches for a token ID that ends with the provided suffix (e.g., last 6 digits)
+        and permanently removes it from the monitoring database.
+        
+        Args:
+            suffix (str): The last characters of the token ID to search for.
+            
+        Returns:
+            bool: True if at least one token was found and removed, False otherwise.
+        """
+        parent_key = "TOKEN_IDs"
+        
+        # 1. Load the entire token dictionary from SQLite
+        all_tokens = self.get(parent_key, {})
+        
+        if not all_tokens:
+            print("📭 Token database is currently empty.")
+            return False
+
+        # 2. Identify all keys that match the requested suffix
+        # We cast both to string to prevent TypeError crashes
+        target_suffix = str(suffix)
+        keys_to_delete = [
+            token_id for token_id in all_tokens.keys() 
+            if str(token_id).endswith(target_suffix)
+        ]
+
+        # 3. Handle the case where no match is found
+        if not keys_to_delete:
+            print(f"⚠️ Cannot remove: No token found ending with '{target_suffix}'.")
+            return False
+
+        # 4. Safely delete the matched keys from the dictionary
+        for key in keys_to_delete:
+            del all_tokens[key]
+            print(f"🗑️ Config updated: Token ending in ...{key[-5:]} has been removed.")
+
+        # 5. Save the modified dictionary back to the database
+        self.update(parent_key, all_tokens)
+        return True
+
+    def toggle_token_monitoring(self, suffix: str, toggle_key: str) -> str:
+        """
+        Searches for a token ID ending with the provided suffix (e.g., last 6 digits)
+        and toggles its 'is_active' boolean status.
+        
+        Args:
+            suffix (str): The trailing characters of the token ID to target.
+            toggle_key (str): The key whose value needs to be toggled.
+            
+        Returns:
+            str: A message indicating the result of the operation.
+        """
+        parent_key = "TOKEN_IDs"
+        
+        # 1. Load the entire token dictionary from the SQLite database
+        all_tokens = self.get(parent_key, {})
+        
+        if not all_tokens:
+            print("📭 Token database is currently empty.")
+            return False
+
+        # 2. Identify all keys matching the requested suffix
+        target_suffix = str(suffix)
+        matched_keys = [
+            token_id for token_id in all_tokens.keys() 
+            if str(token_id).endswith(target_suffix)
+        ]
+
+        # 3. Handle the case where the token does not exist
+        if not matched_keys:
+            print(f"⚠️ Cannot update: No token found ending with '{target_suffix}'.")
+            return False
+
+        message = ""
+
+        # 4. Safely toggle the boolean flag for the matched keys
+        for key in matched_keys:
+            # Extract current status, defaulting to True if the key is somehow missing
+            current_status = all_tokens[key].get(toggle_key, True)
+
+            # Invert the boolean value
+            new_status = not current_status
+            all_tokens[key][toggle_key] = new_status
+            
+            # Formatted console logging for server monitoring
+            status_icon = "🟢" if new_status else "🔴"
+            state_text = "ACTIVE" if new_status else "INACTIVE"
+            if toggle_key == "is_active":
+                message = f"{status_icon} Token ...{key[-5:]} is now {state_text}."
+            else:
+                message = f"{status_icon} Token ...{key[-5:]} 'is_one_left' is now {state_text}."
+            # print(f"{status_icon} Config updated: Token ...{key[-5:]} is now {state_text}.")
+
+        # 5. Commit the modified dictionary back to the database memory
+        self.update(parent_key, all_tokens)
+        return message
 
 # Global instance
 config = ConfigManager()
