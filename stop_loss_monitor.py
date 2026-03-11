@@ -244,7 +244,7 @@ async def emergency_tweet_sell(executor):
                 Notifier._send(f"\nSOLD {bracket} instantly due to a new tweet detected.")
                 
                 # Remove from database immediately to prevent double spending
-                await asyncio.to_thread(config.toggle_token_monitoring, token_id[-5:], "is_active")
+                await asyncio.to_thread(config.toggle_token_monitoring, token_id[-5:], "is_one_left")
                 
     print("✅ Emergency sell protocol complete.")
 

@@ -38,17 +38,32 @@ class XStreamManager:
         print("✅ X API Rules set: Strictly monitoring @elonmusk.")
 
     async def start_listening(self):
-        """Main connection loop equipped with a hard 15-minute Circuit Breaker."""
+        """
+        Main connection loop equipped with a hard 16-minute Circuit Breaker.
+        Sets rules ONLY ONCE outside the loop to save API limits.
+        """
         timeout = aiohttp.ClientTimeout(total=None)
         backoff_time = 3 
         
         async with aiohttp.ClientSession(timeout=timeout) as session:
+            
+            # 1. SETUP RULES ONCE BEFORE THE LOOP
+            try:
+                print("⚙️ Initializing X API Rules...")
+                await self.setup_rules(session)
+            except aiohttp.ClientResponseError as e:
+                if e.status == 429:
+                    print("🛑 [CIRCUIT BREAKER] 429 hit during setup. Sleeping 16 minutes...")
+                    Notifier._send("🛑 X API Rate Limit Hit during setup. Pausing for 16 minutes.")
+                    await asyncio.sleep(960) # 16 mins to clear the rolling window
+                else:
+                    print(f"⚠️ Setup HTTP Error: {e.status}")
+            except Exception as e:
+                print(f"⚠️ Setup Network Error: {e}")
+
+            # 2. THE INFINITE LISTENING LOOP
             while True:
                 try:
-                    # Attempt to set rules first. If this hits a 429, it skips the connection 
-                    # completely and drops into the error handler below.
-                    await self.setup_rules(session)
-                    
                     print("📡 Connecting to X Filtered Stream...")
                     async with session.get(self.stream_url, headers=self.headers) as response:
                         response.raise_for_status()
@@ -67,7 +82,7 @@ class XStreamManager:
                                 tweet_data = json.loads(clean_line)
                                 tweet_text = tweet_data.get('data', {}).get('text', 'No text')
                                 print(f"🚨 TWEET DETECTED: {tweet_text}")
-                                Notifier._send(f"🚨 TWEET DETECTED: {tweet_text}")
+                                Notifier._send(f"🚨 TWEET DETECTED")
                                 
                                 asyncio.create_task(self.trigger_function())
                             except json.JSONDecodeError as e:
@@ -76,18 +91,13 @@ class XStreamManager:
                 except aiohttp.ClientResponseError as e:
                     # --- THE CIRCUIT BREAKER ---
                     if e.status == 429:
-                        Notifier._send("⚠️ X API Rate Limit Hit: 429 Too Many Requests. Activating Circuit Breaker.")
                         print("\n🛑 [CIRCUIT BREAKER] 429 Too Many Requests detected!")
-                        print("⏳ X API enforced a strict 15-minute timeout.")
-                        print("📊 The bot is pausing X requests, but Polymarket monitoring continues...")
+                        print("⏳ X API enforced a strict timeout. Sleeping for 16 minutes...")
+                        Notifier._send("⚠️ X API Rate Limit Hit: 429 Too Many Requests. Activating Circuit Breaker for 16 minutes.")
                         
-                        # Force a hard sleep for exactly 15 minutes (900 seconds) + 10s buffer
-                        await asyncio.sleep(910)
-                        
-                        # Reset backoff time to try again fresh
-                        backoff_time = 3
+                        await asyncio.sleep(960) # Force a hard sleep for exactly 16 minutes
+                        backoff_time = 3 # Reset backoff time to try again fresh
                     else:
-                        Notifier._send(f"⚠️ X API HTTP Error: {e.status}. Backing off and retrying...")
                         print(f"⚠️ HTTP Error: {e.status}")
                         print(f"⏳ Backing off for {backoff_time} seconds...")
                         await asyncio.sleep(backoff_time)
@@ -96,7 +106,7 @@ class XStreamManager:
                 except Exception as e:
                     # Standard network errors (like sudden WiFi drops or 503s)
                     print(f"⚠️ Network/Stream Error: {e}")
-                    Notifier._send(f"⚠️ Network/Stream Error: {e}")
                     print(f"⏳ Backing off for {backoff_time} seconds...")
+                    Notifier._send(f"⚠️ Network/Stream Error: {e}")
                     await asyncio.sleep(backoff_time)
                     backoff_time = min(backoff_time * 2, 60)
