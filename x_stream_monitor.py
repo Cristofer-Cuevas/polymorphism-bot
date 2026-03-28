@@ -5,7 +5,7 @@ from notification_manager import Notifier
 from twilio_caller import call_alert
 
 class XStreamManager:
-    def __init__(self, bearer_token: str, sell_trigger, buy_trigger, call_check=None):
+    def __init__(self, bearer_token: str, sell_trigger, buy_trigger, call_check=None, call_disable=None):
         self.bearer_token = bearer_token
         self.headers = {"Authorization": f"Bearer {self.bearer_token}"}
         self.rules_url = "https://api.twitter.com/2/tweets/search/stream/rules"
@@ -19,6 +19,7 @@ class XStreamManager:
 
         # Elon Musk's official, static X account ID
         self.call_check = call_check
+        self.call_disable = call_disable
         self.elon_id = "44196397"
 
     async def setup_rules(self, session: aiohttp.ClientSession):
@@ -113,6 +114,8 @@ class XStreamManager:
                                     asyncio.create_task(self.buy_trigger())
                                     if self.call_check and self.call_check():
                                         await asyncio.to_thread(call_alert, tweet_category)
+                                        if self.call_disable:
+                                            self.call_disable()
                                 
                             except json.JSONDecodeError as e:
                                 print(f"⚠️ JSON Parse Error on valid line: {e}")

@@ -479,7 +479,12 @@ async def main():
     async def buy_trigger():
         await emergency_tweet_buy(executor)
 
-    x_monitor = XStreamManager(bearer_token=x_token, sell_trigger=sell_trigger, buy_trigger=buy_trigger, call_check=lambda: call_enabled)
+    def disable_call():
+        global call_enabled
+        call_enabled = False
+        print("📞 Twilio calls auto-disabled after call")
+
+    x_monitor = XStreamManager(bearer_token=x_token, sell_trigger=sell_trigger, buy_trigger=buy_trigger, call_check=lambda: call_enabled, call_disable=disable_call)
 
     print("✅ System Core Online — all 5 tasks launching.")
 
