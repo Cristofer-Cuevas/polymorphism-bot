@@ -44,7 +44,8 @@ def fetch_polymarket_positions():
                     size=pos.get('size', 0.0),
                     price=pos.get('curPrice', 0.0),
                     slug=pos.get('slug', '')[20:],
-                    is_one_left=False
+                    is_one_left=False,
+                    is_buy_next= False
                 )
                 is_token_added = True
                 

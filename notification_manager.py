@@ -1,6 +1,5 @@
 import requests
 from config_manager import config
-# from order_placer import cycles
 
 class NotificationManager:
     def __init__(self):
@@ -108,7 +107,7 @@ class NotificationManager:
         
         except Exception as e:
             error_msg = f"❌ Database Read Error: {e}"
-            message.reply(error_msg)
+            self._send(error_msg)
             print(error_msg)
 
 
@@ -129,10 +128,8 @@ class NotificationManager:
             try:
                 resp = requests.get(url, params=params, timeout=35)
                 data = resp.json()
-                print("resp", resp)
                 if data.get("ok") and data.get("result"):
                     results = data["result"]
-                    print("results", results)
                     
                     # If we have results, we process the last one
                     if len(results) > 0:
@@ -145,15 +142,13 @@ class NotificationManager:
                         if "message" in last_msg and "text" in last_msg["message"]:
                             text = last_msg["message"]["text"]
                             sender_id = str(last_msg["message"]["chat"]["id"])
-                            command_queue.put(text)
 
-                            # SECURITY: Ignore messages from other people
                             if sender_id != str(self.chat_id):
                                 print(f"⚠️ Ignored command from unknown user: {sender_id}")
                                 continue
 
+                            command_queue.put(text)
                             print(f"📩 Command received: {text}")
-                            # return text
                 
                 # return None
 
@@ -162,7 +157,3 @@ class NotificationManager:
                 return None
 
 Notifier = NotificationManager()
-
-
-
-

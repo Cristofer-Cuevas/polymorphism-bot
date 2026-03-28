@@ -138,7 +138,7 @@ class ConfigManager:
             "stop_loss": float(stop_loss),
             "size": float(size),
             "actual_price": float(price),
-            "is_active": True,
+            "is_active": False,
             "bracket": slug,
             "is_one_left": is_one_left
         }
@@ -383,8 +383,10 @@ class ConfigManager:
             state_text = "ACTIVE" if new_status else "INACTIVE"
             if toggle_key == "is_active":
                 message = f"{status_icon} Token ...{key[-5:]} is now {state_text}."
+            elif toggle_key == "is_buy_next":
+                message = f"{status_icon} Token ...{key[-5:]} 'is\\_buy\\_next' is now {state_text}."
             else:
-                message = f"{status_icon} Token ...{key[-5:]} 'is_one_left' is now {state_text}."
+                message = f"{status_icon} Token ...{key[-5:]} 'is\\_one\\_left' is now {state_text}."
             # print(f"{status_icon} Config updated: Token ...{key[-5:]} is now {state_text}.")
 
         # 5. Commit the modified dictionary back to the database memory

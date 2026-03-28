@@ -1,0 +1,10 @@
+requests
+python-dotenv
+websockets
+aiohttp
+web3
+eth-account
+eth-abi
+eth-utils
+py-clob-client
+twilio

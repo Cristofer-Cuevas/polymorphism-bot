@@ -1,14 +1,86 @@
 import os
+import time
+import requests
 from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs, BalanceAllowanceParams, AssetType
-from py_clob_client.order_builder.constants import BUY
-from py_clob_client.clob_types import OrderArgs, OrderType
+from py_clob_client.clob_types import OrderArgs, OrderType, BalanceAllowanceParams, AssetType
 from config_manager import config
 from notification_manager import Notifier
+from web3 import Web3
+from eth_account import Account
+from eth_account.messages import encode_defunct
+from eth_abi.packed import encode_packed
+from eth_utils import keccak
 
 # Load environment variables
 load_dotenv()
+
+# NegRisk Adapter contract on Polygon
+NEG_RISK_ADAPTER_ADDRESS = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+
+# Polymarket Relayer config (for gasless on-chain txs through proxy)
+RELAYER_URL = "https://relayer-v2.polymarket.com"
+PROXY_FACTORY = "0xaB45c5A4B0c941a2F231C04C3f49182e1A254052"
+RELAY_HUB = "0xD216153c06E857cD7f72665E0aF1d7D82172F494"
+
+NEG_RISK_ADAPTER_ABI = [
+    {
+        "type": "function",
+        "name": "convertPositions",
+        "inputs": [
+            {"name": "_marketId", "type": "bytes32"},
+            {"name": "_indexSet", "type": "uint256"},
+            {"name": "_amount", "type": "uint256"}
+        ],
+        "outputs": [],
+        "stateMutability": "nonpayable"
+    }
+]
+
+PROXY_ABI = [
+    {
+        "type": "function",
+        "name": "proxy",
+        "inputs": [
+            {
+                "name": "calls",
+                "type": "tuple[]",
+                "components": [
+                    {"name": "typeCode", "type": "uint8"},
+                    {"name": "to", "type": "address"},
+                    {"name": "value", "type": "uint256"},
+                    {"name": "data", "type": "bytes"}
+                ]
+            }
+        ],
+        "outputs": [{"name": "returnValues", "type": "bytes[]"}],
+        "stateMutability": "payable"
+    }
+]
+
+CTF_ABI = [
+    {
+        "type": "function",
+        "name": "isApprovedForAll",
+        "inputs": [
+            {"name": "_owner", "type": "address"},
+            {"name": "_operator", "type": "address"}
+        ],
+        "outputs": [{"name": "", "type": "bool"}],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "setApprovalForAll",
+        "inputs": [
+            {"name": "_operator", "type": "address"},
+            {"name": "_approved", "type": "bool"}
+        ],
+        "outputs": [],
+        "stateMutability": "nonpayable"
+    }
+]
 
 class OrderExecutor:
     def __init__(self):
@@ -90,20 +162,8 @@ class OrderExecutor:
         print(f"🔍 Analyzing Condition: {condition_id} | Target: {token_id}")
 
         try:
-            # 2. GET TOKEN ID
-            # market = self.client.get_market(condition_id)
-            # token_id = None
-            
-            
-            # if not token_id:
-            #     print(f"❌ Token ID not found for {token_id}")
-            #     return None
-
-            # 3. CHECK PRICE (Order Book)
             orderbook = self.client.get_order_book(token_id)
             asks = orderbook.asks
-            # print("ORDERS:", orderbook)
-            print("SELLERS:", asks)
 
             if not asks:
                 print("⚠️ No sellers available (Market might be empty).")
@@ -190,31 +250,21 @@ class OrderExecutor:
             print(f"❌ Error fetching price for token {token_id}: {e}")
             return None
     
-    from py_clob_client.clob_types import OrderArgs, OrderType # <--- Importante
-
-    def place_limit_order(self, token_id, price, size, side): 
+    def place_limit_order(self, token_id, price, size, side):
         print(f"🎣 Lanzando anzuelo: Comprar {size} acciones a ${price}...")
 
         try:
             resp = self.client.create_and_post_order(
                 OrderArgs(
-                    price=price,        # Tu precio deseado (Ej: 0.05)
-                    size=size,          # Cuántas acciones
+                    price=price,
+                    size=size,
                     side=side,
                     token_id=token_id,
-                    
-                    # ESTA ES LA CLAVE DE LA LIMIT ORDER:
-                    # order_type=OrderType.GTC  # Good Till Canceled (Buena hasta cancelar)
                 )
             )
 
-            stop_loss_price = round(max(0.0, price - 0.05), 2)
-            
             if resp and resp.get("success"):
-                print(f"✅ Orden colocada en el libro. ID: {resp.get('orderID')}")
-                # config.update_nested("LIMIT_ORDER_IDs", size, resp.get('orderID'))
-                # config.add_monitored_token(token_id, stop_loss_price, size, price)
-                print("⏳ Ahora a esperar que alguien te venda...")
+                print(f"✅ Order placed. ID: {resp.get('orderID')}")
                 return resp.get('orderID')
             else:
                 print(f"❌ Error: {resp.get('errorMsg')}")
@@ -293,6 +343,276 @@ class OrderExecutor:
             print(f"💥 Error: {e}")
             return None
 
+    def buy_and_convert(self, no_token_id, neg_risk_market_id, condition_id, price, size):
+        """
+        Buys No on the most unlikely bracket, then converts No tokens
+        to Yes on all other brackets via the NegRisk Adapter (on-chain).
+        """
+        if not self.client:
+            print("❌ Client not connected.")
+            return None
+
+        try:
+            print(f"🎯 Buying {size} No shares @ ${price} (FOK - immediate fill)...")
+
+            # 1. Buy No on the most unlikely bracket — FOK ensures instant fill or cancel
+            order = self.client.create_order(OrderArgs(
+                price=price,
+                size=size,
+                side="BUY",
+                token_id=no_token_id
+            ))
+            resp = self.client.post_order(order, OrderType.FOK)
+
+            if not resp or not resp.get("success"):
+                print(f"❌ Buy No failed: {resp.get('errorMsg') if resp else 'No response'}")
+                return None
+
+            order_id = resp.get("orderID")
+            print(f"✅ No shares bought instantly. Order ID: {order_id}")
+
+            # 3. Convert No tokens to Yes on all other brackets (on-chain)
+            print(f"🔄 Converting {size} No tokens via NegRisk Adapter...")
+            self._convert_positions_onchain(neg_risk_market_id, condition_id, size)
+            print(f"✅ Conversion complete!")
+
+            return order_id
+
+        except Exception as e:
+            print(f"💥 Error in buy_and_convert: {e}")
+            return None
+
+    def buy_yes_direct(self, yes_token_id, price, size):
+        """
+        Buys YES shares directly on a specific bracket via FOK order.
+        No conversion — straight YES purchase.
+        """
+        if not self.client:
+            print("❌ Client not connected.")
+            return None
+
+        try:
+            print(f"🎯 Buying {size} Yes shares @ ${price} (FOK - immediate fill)...")
+
+            order = self.client.create_order(OrderArgs(
+                price=price,
+                size=size,
+                side="BUY",
+                token_id=yes_token_id
+            ))
+            resp = self.client.post_order(order, OrderType.FOK)
+
+            if not resp or not resp.get("success"):
+                print(f"❌ Buy Yes failed: {resp.get('errorMsg') if resp else 'No response'}")
+                return None
+
+            order_id = resp.get("orderID")
+            print(f"✅ Yes shares bought instantly. Order ID: {order_id}")
+            return order_id
+
+        except Exception as e:
+            print(f"💥 Error in buy_yes_direct: {e}")
+            return None
+
+    def _get_web3(self):
+        """Returns a Web3 instance connected to Polygon (PoA chain)."""
+        from web3.middleware import ExtraDataToPOAMiddleware
+        rpc_url = os.getenv("POLYGON_RPC_URL", "https://polygon-rpc.com")
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+        return w3
+
+    def _exec_via_relayer(self, to_address, calldata_hex):
+        """
+        Executes an on-chain call through Polymarket's Relayer API (gasless).
+        The relayer submits the tx through the proxy wallet on our behalf.
+        Uses the PROXY transaction type with RelayHub signing.
+        """
+        relayer_api_key = os.getenv("RELAYER_API_KEY")
+        if not relayer_api_key:
+            raise Exception("RELAYER_API_KEY not set in .env")
+
+        eoa = Account.from_key(self.private_key).address
+        proxy_addr = Web3.to_checksum_address(self.proxy_address)
+
+        # 1. Get relay payload (relay address + nonce)
+        rp = requests.get(
+            f"{RELAYER_URL}/relay-payload",
+            params={"address": eoa, "type": "PROXY"}
+        ).json()
+        relay_address = rp["address"]
+        nonce = rp["nonce"]
+        print(f"📋 Relayer nonce: {nonce}, relay: {relay_address}")
+
+        # 2. Encode the proxy(ProxyCall[]) calldata
+        w3 = Web3()
+        proxy_contract = w3.eth.contract(
+            address=proxy_addr,
+            abi=PROXY_ABI
+        )
+        calldata_bytes = bytes.fromhex(calldata_hex[2:] if calldata_hex.startswith("0x") else calldata_hex)
+        calls = [(1, Web3.to_checksum_address(to_address), 0, calldata_bytes)]
+        raw = proxy_contract.functions.proxy(calls)._encode_transaction_data()
+        encoded_data = raw if isinstance(raw, str) and raw.startswith("0x") else "0x" + (raw.hex() if isinstance(raw, bytes) else raw)
+
+        # 3. Create struct hash: keccak256(concat("rlx:", from, to, data, txFee, gasPrice, gasLimit, nonce, relayHub, relay))
+        gas_limit = "6000000"
+        gas_price = "0"
+        relayer_fee = "0"
+
+        to_field = Web3.to_checksum_address(PROXY_FACTORY)
+
+        data_to_hash = (
+            b"rlx:"
+            + bytes.fromhex(eoa[2:])
+            + bytes.fromhex(to_field[2:])
+            + bytes.fromhex(encoded_data[2:])
+            + int(relayer_fee).to_bytes(32, "big")
+            + int(gas_price).to_bytes(32, "big")
+            + int(gas_limit).to_bytes(32, "big")
+            + int(nonce).to_bytes(32, "big")
+            + bytes.fromhex(RELAY_HUB[2:])
+            + bytes.fromhex(relay_address[2:])
+        )
+        struct_hash = keccak(data_to_hash)
+
+        # 4. Sign with EIP-191 personal sign
+        msg = encode_defunct(struct_hash)
+        raw_sig = Account.sign_message(msg, self.private_key).signature
+        if isinstance(raw_sig, bytes):
+            signature = "0x" + raw_sig.hex()
+        else:
+            signature = raw_sig if raw_sig.startswith("0x") else "0x" + raw_sig
+
+        # 5. Submit to relayer
+        payload = {
+            "type": "PROXY",
+            "from": eoa,
+            "to": to_field,
+            "proxyWallet": proxy_addr,
+            "data": encoded_data,
+            "nonce": str(nonce),
+            "signature": signature,
+            "signatureParams": {
+                "gasPrice": gas_price,
+                "gasLimit": gas_limit,
+                "relayerFee": relayer_fee,
+                "relayHub": RELAY_HUB,
+                "relay": relay_address,
+            },
+        }
+
+        headers = {
+            "RELAYER_API_KEY": relayer_api_key,
+            "RELAYER_API_KEY_ADDRESS": os.getenv("RELAYER_API_KEY_ADDRESS"),
+            "Content-Type": "application/json",
+        }
+
+        print(f"📤 Submitting to relayer...")
+        resp = requests.post(f"{RELAYER_URL}/submit", json=payload, headers=headers)
+
+        if resp.status_code != 200:
+            raise Exception(f"Relayer error {resp.status_code}: {resp.text}")
+
+        result = resp.json()
+        tx_id = result.get("transactionID")
+        print(f"📋 Relayer tx ID: {tx_id}, state: {result.get('state')}")
+
+        # 6. Poll for confirmation
+        for i in range(30):
+            time.sleep(3)
+            check = requests.get(f"{RELAYER_URL}/transaction", params={"id": tx_id}).json()
+            if isinstance(check, list) and check:
+                check = check[0]
+            state = check.get("state", "")
+            tx_hash = check.get("transactionHash", "")
+            print(f"   ⏳ Poll {i+1}: {state} {tx_hash[:20] if tx_hash else ''}")
+
+            if state in ("STATE_CONFIRMED", "STATE_MINED"):
+                print(f"✅ Relayer tx confirmed: {tx_hash}")
+                return tx_hash
+            if state in ("STATE_FAILED", "STATE_INVALID"):
+                raise Exception(f"Relayer tx failed: {state} - {tx_hash}")
+
+        raise Exception(f"Relayer tx {tx_id} timed out after 90s")
+
+    def _ensure_adapter_approval(self):
+        """Checks if NegRisk Adapter is approved on CTF. Approves via relayer if not."""
+        w3 = self._get_web3()
+        proxy_addr = Web3.to_checksum_address(self.proxy_address)
+        ctf = w3.eth.contract(
+            address=Web3.to_checksum_address(CTF_ADDRESS),
+            abi=CTF_ABI
+        )
+        adapter_addr = Web3.to_checksum_address(NEG_RISK_ADAPTER_ADDRESS)
+
+        is_approved = ctf.functions.isApprovedForAll(proxy_addr, adapter_addr).call()
+        if is_approved:
+            print("✅ NegRisk Adapter already approved on CTF.")
+            return
+
+        print("🔐 Approving NegRisk Adapter on CTF contract (via relayer)...")
+        raw_cd = ctf.functions.setApprovalForAll(adapter_addr, True)._encode_transaction_data()
+        calldata_hex = raw_cd if isinstance(raw_cd, str) and raw_cd.startswith("0x") else "0x" + (raw_cd.hex() if isinstance(raw_cd, bytes) else raw_cd)
+        self._exec_via_relayer(CTF_ADDRESS, calldata_hex)
+
+    def _resolve_onchain_question_index(self, neg_risk_market_id, condition_id, max_questions=30):
+        """
+        Finds the on-chain question index by matching the conditionId.
+        On-chain: conditionId = keccak256(adapter_address + questionId + outcomeSlotCount)
+        where questionId = marketId + index (simple addition, NOT a hash).
+        The API array order does NOT match the on-chain question index!
+        """
+        from eth_utils import keccak as eth_keccak
+
+        adapter_bytes = bytes.fromhex(NEG_RISK_ADAPTER_ADDRESS[2:].lower())
+        market_id_int = int(neg_risk_market_id, 16)
+        target_cid = condition_id.lower().replace("0x", "")
+
+        for i in range(max_questions):
+            question_id_bytes = (market_id_int + i).to_bytes(32, "big")
+            packed = adapter_bytes + question_id_bytes + (2).to_bytes(32, "big")
+            computed_cid = eth_keccak(packed).hex()
+
+            if computed_cid == target_cid:
+                print(f"✅ On-chain question index resolved: {i} (API conditionId matched)")
+                return i
+
+        raise Exception(f"Could not resolve on-chain question index for conditionId {condition_id}")
+
+    def _convert_positions_onchain(self, neg_risk_market_id, condition_id, amount):
+        """
+        Calls convertPositions on the NegRisk Adapter via the Relayer API.
+        The relayer executes through the proxy wallet (gasless, no owner key needed).
+        Resolves the correct on-chain question index from the conditionId.
+        """
+        # Ensure the adapter is approved to move proxy's CTF tokens
+        self._ensure_adapter_approval()
+
+        # Resolve the REAL on-chain question index (API array order != on-chain order)
+        market_index = self._resolve_onchain_question_index(neg_risk_market_id, condition_id)
+
+        w3 = Web3()
+        adapter = w3.eth.contract(
+            address=Web3.to_checksum_address(NEG_RISK_ADAPTER_ADDRESS),
+            abi=NEG_RISK_ADAPTER_ABI
+        )
+
+        index_set = 1 << market_index
+        market_id_bytes = Web3.to_bytes(hexstr=neg_risk_market_id)
+        raw_amount = int(amount * 1_000_000)
+
+        print(f"📝 convertPositions(marketId={neg_risk_market_id}, indexSet={index_set}, amount={raw_amount})")
+
+        raw_cd = adapter.functions.convertPositions(
+            market_id_bytes,
+            index_set,
+            raw_amount
+        )._encode_transaction_data()
+        calldata_hex = raw_cd if isinstance(raw_cd, str) and raw_cd.startswith("0x") else "0x" + (raw_cd.hex() if isinstance(raw_cd, bytes) else raw_cd)
+
+        self._exec_via_relayer(NEG_RISK_ADAPTER_ADDRESS, calldata_hex)
+
     def sell_rapidly(self, token_id, size):
             """
             Executes a true MARKET SELL by dumping the tokens at the lowest possible price ($0.01).
@@ -304,8 +624,6 @@ class OrderExecutor:
             try:
                 panic_price = 0.01 
                 print(f"🚀 Firing aggressive market order to sweep the book...")
-
-                from py_clob_client.clob_types import OrderType, OrderArgs
 
                 # 1. Create the order arguments payload (order_type must NOT be included here)
                 order_args = OrderArgs(
@@ -334,4 +652,3 @@ class OrderExecutor:
 
 # Global Instance
 OrderExecutor = OrderExecutor()
-print("Balance USDC", OrderExecutor.get_usdc_balance())
