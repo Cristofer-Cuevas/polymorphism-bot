@@ -129,7 +129,7 @@ class ConfigManager:
         self.update('LAST_EVENT_CREATED_DATE', date_str)
         print(f"💾 Checkpoint saved: {date_str}")
 
-    def add_monitored_token(self, token_id, stop_loss, size, price, slug, is_one_left):
+    def add_monitored_token(self, token_id, stop_loss, size, price, slug, is_one_left, is_buy_next):
         """
         Agrega un token a la lista de vigilancia usando tu lógica existente.
         """
@@ -140,7 +140,8 @@ class ConfigManager:
             "actual_price": float(price),
             "is_active": False,
             "bracket": slug,
-            "is_one_left": is_one_left
+            "is_one_left": is_one_left, 
+            "is_buy_next": is_buy_next
         }
         
         # 2. Usamos tu función mágica 'update_nested'
