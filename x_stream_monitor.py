@@ -109,6 +109,10 @@ class XStreamManager:
                                 print(f"🚨 [{tweet_category.upper()}] DETECTED: {tweet_text}")
                                 await asyncio.to_thread(Notifier._send, f"🚨 [{tweet_category.upper()}] DETECTED")
 
+                                # Sell trigger: fires on all tweet types except Self-Reply
+                                if tweet_category in ("Original Post", "Reply to Someone Else", "Retweet", "Quote Tweet"):
+                                    asyncio.create_task(self.sell_trigger())
+
                                 # Buy trigger + phone call: fires on Original Post, Retweet, Quote Tweet
                                 if tweet_category in ("Original Post", "Retweet", "Quote Tweet"):
                                     asyncio.create_task(self.buy_trigger())
