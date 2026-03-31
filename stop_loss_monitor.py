@@ -14,7 +14,7 @@ from filter_by_90_114 import GetMarkets
 import os
 from x_stream_monitor import XStreamManager
 
-sys.stdout.reconfigure(line_buffering=True)
+sys.stdout.reconfigure(line_buffering=True, write_through=True)
 
 # --- STOP LOSS CONFIG ---
 stop_loss_cache = config.get_stop_loss_threshold()
@@ -295,7 +295,7 @@ async def run_websocket_monitor(executor):
                 subscribed_tokens = set()
 
                 while True:
-                    TOKENS = config.get("TOKEN_IDs", {})
+                    TOKENS = await asyncio.to_thread(config.get, "TOKEN_IDs", {})
                     current_token_ids = set(TOKENS.keys())
                     new_tokens = current_token_ids - subscribed_tokens
 

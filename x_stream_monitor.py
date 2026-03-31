@@ -56,7 +56,7 @@ class XStreamManager:
             except aiohttp.ClientResponseError as e:
                 if e.status == 429:
                     print("🛑 [CIRCUIT BREAKER] 429 hit during setup. Sleeping 16 minutes...")
-                    Notifier._send("🛑 X API Rate Limit Hit during setup. Pausing for 16 minutes.")
+                    await asyncio.to_thread(Notifier._send, "🛑 X API Rate Limit Hit during setup. Pausing for 16 minutes.")
                     await asyncio.sleep(960) 
                 else:
                     print(f"⚠️ Setup HTTP Error: {e.status}")
@@ -71,7 +71,7 @@ class XStreamManager:
                         
                         backoff_time = 3
                         print("🟢 Connected to X! Waiting for a tweet...")
-                        Notifier._send("🟢 Connected to X! Monitoring @elonmusk for new tweets...")
+                        await asyncio.to_thread(Notifier._send, "🟢 Connected to X! Monitoring @elonmusk for new tweets...")
                         
                         async for line in response.content:
                             clean_line = line.strip()
@@ -128,7 +128,7 @@ class XStreamManager:
                     if e.status == 429:
                         print("\n🛑 [CIRCUIT BREAKER] 429 Too Many Requests detected!")
                         print("⏳ X API enforced a strict timeout. Sleeping for 16 minutes...")
-                        Notifier._send("⚠️ X API Rate Limit Hit: 429 Too Many Requests. Activating Circuit Breaker for 16 minutes.")
+                        await asyncio.to_thread(Notifier._send, "⚠️ X API Rate Limit Hit: 429 Too Many Requests. Activating Circuit Breaker for 16 minutes.")
                         
                         await asyncio.sleep(960)
                         backoff_time = 3
@@ -141,6 +141,6 @@ class XStreamManager:
                 except Exception as e:
                     print(f"⚠️ Network/Stream Error: {e}")
                     print(f"⏳ Backing off for {backoff_time} seconds...")
-                    Notifier._send(f"⚠️ Network/Stream Error: {e}")
+                    await asyncio.to_thread(Notifier._send, f"⚠️ Network/Stream Error: {e}")
                     await asyncio.sleep(backoff_time)
                     backoff_time = min(backoff_time * 2, 60)
