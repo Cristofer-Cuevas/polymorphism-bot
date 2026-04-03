@@ -363,7 +363,7 @@ async def run_websocket_monitor(executor):
 
 async def emergency_tweet_sell(executor):
     print("⚡ X API TRIGGER: INITIATING EMERGENCY SELL PROTOCOL ⚡")
-    TOKENS = config.get("TOKEN_IDs", {})
+    TOKENS = await asyncio.to_thread(config.get, "TOKEN_IDs", {})
 
     if not TOKENS:
         print("📭 No tokens to sell.")
@@ -374,17 +374,24 @@ async def emergency_tweet_sell(executor):
             size = token_data.get("size", 0.0)
             bracket = (token_data.get("bracket") or "Unknown")[20:]
             if size > 0:
-                print(f"🚨 LIQUIDATING {token_id} DUE TO ELON TWEET!")
-                await asyncio.to_thread(executor.sell_rapidly, token_id, size)
-                await asyncio.to_thread(Notifier._send, f"\nSOLD {bracket} instantly due to a new tweet detected.")
-                await asyncio.to_thread(config.toggle_token_monitoring, token_id[-5:], "is_one_left")
+                try:
+                    print(f"🚨 LIQUIDATING {token_id} DUE TO ELON TWEET!")
+                    order_id = await asyncio.to_thread(executor.sell_rapidly, token_id, size)
+                    if order_id:
+                        await asyncio.to_thread(Notifier._send, f"\nSOLD {bracket} instantly due to a new tweet detected. Order: {order_id}")
+                    else:
+                        await asyncio.to_thread(Notifier._send, f"❌ Failed to sell {bracket} — Polymarket returned no order ID.")
+                    await asyncio.to_thread(config.toggle_token_monitoring, token_id[-5:], "is_one_left")
+                except Exception as e:
+                    print(f"❌ Tweet sell error: {e}")
+                    await asyncio.to_thread(Notifier._send, f"❌ Tweet sell error on {bracket}: {e}")
 
     print("✅ Emergency sell protocol complete.")
 
 
 async def emergency_tweet_buy(executor):
     print("⚡ X API TRIGGER: INITIATING TWEET BUY PROTOCOL ⚡")
-    TOKENS = config.get("TOKEN_IDs", {})
+    TOKENS = await asyncio.to_thread(config.get, "TOKEN_IDs", {})
 
     if not TOKENS:
         print("📭 No tokens configured for tweet buy.")

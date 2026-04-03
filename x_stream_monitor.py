@@ -110,12 +110,14 @@ class XStreamManager:
                                 await asyncio.to_thread(Notifier._send, f"🚨 [{tweet_category.upper()}] DETECTED")
 
                                 # Sell trigger: fires on all tweet types except Self-Reply
-                                if tweet_category in ("Original Post", "Reply to Someone Else", "Retweet", "Quote Tweet"):
-                                    asyncio.create_task(self.sell_trigger())
-
                                 # Buy trigger + phone call: fires on Original Post, Retweet, Quote Tweet
+                                # IMPORTANT: sell and buy run sequentially to avoid concurrent
+                                # access to ClobClient and SQLite (not thread-safe).
+                                if tweet_category in ("Original Post", "Reply to Someone Else", "Retweet", "Quote Tweet"):
+                                    await self.sell_trigger()
+
                                 if tweet_category in ("Original Post", "Retweet", "Quote Tweet"):
-                                    asyncio.create_task(self.buy_trigger())
+                                    await self.buy_trigger()
                                     if self.call_check and self.call_check():
                                         await asyncio.to_thread(call_alert, tweet_category)
                                         if self.call_disable:
